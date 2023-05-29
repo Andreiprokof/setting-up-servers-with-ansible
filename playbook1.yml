@@ -1,0 +1,141 @@
+
+---
+- name: Playbook  
+  hosts: SERVER-B
+  become: yes
+  
+  vars_files:
+    - vars.yml
+     
+
+  tasks:
+  
+   - name: Set authorized keys
+     ansible.posix.authorized_key:
+       state: present
+       user: "{{ user }}" 
+       key: "{{ lookup ('file', '/home/andreiprokof/.ssh/id_rsa.pub') }}" 
+  
+#delete autentication password
+   - name: off autentifacation for password  
+     lineinfile: dest=/etc/ssh/sshd_config regexp='^#?PasswordAuthentication' line='PasswordAuthentication no'
+     notify: Restart SSH 
+   
+
+#create user and add privilege
+   - name: create user DevOps
+     user:
+      name: DevOps
+      system: yes
+      comment: "DevOps user"
+   - name: sudo no password
+     command:  echo 'DevOps ALL=(ALL:ALL) NOPASSWD":" ALL' | tee -a /etc/sudoers.d/DevOps
+
+#apt update
+   - name: update packages
+     apt: update_cache=yes cache_valid_time=3600 
+
+#insllition postgresql for server-b
+   - name: installation postgresql
+     apt: "name=postgresql state=latest" 
+  
+   - name: Install pip
+     apt: "name=python3-pip state=latest"
+
+   - name: Install python packages
+     pip: "name=psycopg2-binary state=present"
+
+   - name: create database myapp and myauth
+     postgresql_db:
+      name: "{{ item }}"
+      state: present
+     become: yes
+     become_user: postgres
+     with_items:
+      - "{{ db_name1 }}"
+      - "{{ db_name2 }}"
+
+   - name: Create db user
+     postgresql_user:
+      state: present
+      name: "{{ db_user }}"
+      password: "{{ db_password }}"
+     become: yes
+     become_user: postgres
+
+   - name: Grand db user access1
+     postgresql_privs:
+      type: database 
+      database: "{{ db_name1 }}"
+      roles:  "{{ db_user  }}"
+      grant_option: no
+      privs: all
+     become: yes
+     become_user: postgres
+
+   - name: Grand db user access2
+     postgresql_privs:
+      type: database
+      database: "{{ db_name2 }}"
+      roles: "{{ db_user }}"
+      grant_option: no
+      privs: CONNECT,TEMPORARY
+     become: yes
+     become_user: postgres
+  
+   - name: replace postgresql.conf  
+     lineinfile: 
+       dest=/etc/postgresql/14/main/postgresql.conf
+       regexp="#listen_addresses="
+       line="listen_addresses='*'"   
+   
+   - name: replace pg_hba.conf
+     ansible.builtin.replace:
+       path: '/etc/postgresql/14/main/pg_hba.conf'
+       regexp: '#\s*IPv4\s*local\s*connections:\nhost\s*all\s*all\s*127.0.0.1/32\s*scram-sha-256'
+       replace: '# IPv4 local connections \nhost     all            {{ db_user }}              {{ ansible_server_c }}/32     scram-sha-256'
+     notify: restart postgresql
+
+   - name: Start postgresql and make it enable on boot
+     service: name=postgresql state=started enabled=yes
+   
+   - name: install iptables
+     apt: "name=iptables state=latest"
+   
+   - name: access ip addres and port
+     ansible.builtin.iptables:
+       chain: INPUT
+       source: "{{ ansible_server_a }}" 
+       protocol: tcp
+       jump: ACCEPT
+       destination_port: 22 
+       comment: Accept new ssh conn
+   
+   - name: block all adres port '22'
+     ansible.builtin.iptables:
+       chain: INPUT 
+       protocol: tcp
+       destination_port: 22
+       jump: DROP
+       
+   - name: save iptables
+     community.general.iptables_state:
+       state: saved
+       path: /run/iptables
+
+   - name: load iptables
+     community.general.iptables_state:
+       state: restored
+       path: /run/iptables
+       noflush: true
+     async: "{{ ansible_timeout }}"
+     poll: 0
+
+  handlers:
+   - name: restart postgresql
+     service: name=postgresql state=restarted
+  
+  handlers:
+   - name: Restart SSH
+     service: name=ssh state=restarted
+ 

@@ -1,0 +1,95 @@
+
+---
+- name: Playbook  
+  hosts: SERVER-B
+  become: yes
+  
+  vars_files:
+    - vars.yml 
+
+  tasks:
+  
+   - name: "Set authorized keys"
+     ansible.posix.authorized_key:
+       state: present
+       user: "{{ user }}" 
+       key: "{{ lookup ('file', '/home/andreiprokof/.ssh/id_rsa.pub') }}" 
+  
+#delete autentication password
+   - name: off autentifacation for password  
+     lineinfile: dest=/etc/ssh/sshd_config regexp='^#?PasswordAuthentication' line='PasswordAuthentication no'
+   - name: Restart SSH
+     service: name=ssh state=restarted  
+
+#create user and add privilege
+   - name: create user DevOps
+     user:
+      name: DevOps
+      system: yes
+      comment: "DevOps user"
+   - name: sudo no password
+     command:  echo 'DevOps ALL=(ALL:ALL) NOPASSWD":" ALL' | tee -a /etc/sudoers.d/DevOps
+
+#apt update
+   - name: update packages
+     apt: update_cache=yes cache_valid_time=3600 
+
+#insllition postgresql for server-b
+   - name: installation postgresql
+     apt: "name=postgresql state=latest" 
+  
+   - name: "Install pip"
+     apt: "name=python3-pip state=latest"
+
+   - name: "Install python packages"
+     pip: "name=psycopg2-binary state=present"
+
+#create database
+   - name: create database myapp and myauth
+     postgresql_db:
+      name: "{{ item }}"
+      state: present
+     become: yes
+     become_user: postgres
+     with_items:
+      - "{{ db_name1 }}"
+      - "{{ db_name2 }}"
+
+#create user for postgres
+   - name: "Create db user"
+     postgresql_user:
+      state: present
+      name: "{{ db_user }}"
+      password: "{{ db_password }}"
+     become: yes
+     become_user: postgres
+
+#Grand db user1
+   - name: "Grand db user access1"
+     postgresql_privs:
+      type: database 
+      database: "{{ db_name1 }}"
+      roles:  "{{ db_user  }}"
+      grant_option: no
+      privs: all
+     become: yes
+     become_user: postgres
+
+#Grand db user2
+   - name: "Grand db user access2"
+     postgresql_privs:
+      type: database
+      database: "{{ db_name2 }}"
+      roles: "{{ db_user }}"
+      grant_option: no
+      privs: CONNECT,TEMPORARY
+   
+     become: yes
+     become_user: postgres
+
+   - name: "connect only server c"  
+     lineinfile: dest=/etc/postgresql/14/main/postgresql.conf regexp="#?listen_addresses" line="listen_addresses='*'"
+     lineinfile: dest=/etc/postgresql/14/main/pg_hba.conf regexp="#?\sIPv4\slocal\sconnections:\nhost\s*all\s*all\s*127.0.0.1/32" line= "# IPv4 local connections:\nhost\s*all\s*all\s*192.168.1.9/32"   
+  handlers:
+   - name: "restart postgresql"
+     service: name=postgresql state=restarted
